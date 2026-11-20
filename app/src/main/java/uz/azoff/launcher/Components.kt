@@ -7,7 +7,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -35,13 +36,17 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
@@ -53,6 +58,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.zIndex
+import android.os.SystemClock
+import kotlin.math.hypot
 import kotlin.math.roundToInt
 
 fun cellHeight(iconSize: Int, showLabels: Boolean): Dp = (iconSize + if (showLabels) 34 else 14).dp
@@ -65,14 +72,14 @@ fun AppIconView(
     labelStyle: TextStyle,
     badge: Int,
     locked: Boolean,
-    onClick: () -> Unit,
+    onClick: (() -> Unit)?,
     onLongClick: (() -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
     Column(
         modifier
             .clip(RoundedCornerShape(12.dp))
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .then(if (onClick != null) Modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick) else Modifier)
             .padding(vertical = 5.dp, horizontal = 2.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -125,14 +132,14 @@ fun FolderIconView(
     iconSize: Dp,
     showLabel: Boolean,
     labelStyle: TextStyle,
-    onClick: () -> Unit,
+    onClick: (() -> Unit)?,
     onLongClick: (() -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
     Column(
         modifier
             .clip(RoundedCornerShape(12.dp))
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .then(if (onClick != null) Modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick) else Modifier)
             .padding(vertical = 5.dp, horizontal = 2.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -164,8 +171,20 @@ fun FolderIconView(
     }
 }
 
+enum class DropSide { LEFT, RIGHT, TOP, BOTTOM }
+
+/** Ikonka ustida uzoq bosilganini bosh ekranning "uzoq bosish" menyusidan ajratish uchun */
+object DragGuard {
+    @Volatile
+    var lastIconLongPress = 0L
+}
+
 /**
- * Oddiy to'r (grid). editMode yoqilganda elementlarni barmoq bilan sudrab joyini o'zgartirish mumkin.
+ * Ikonlar to'ri. Uzoq bosib (yoki tahrirlash rejimida darhol) ikonni istalgan joyga surish mumkin:
+ *  - boshqa katakka — joy almashadi
+ *  - boshqa ikonning ustiga — papka yaratiladi (onMerge)
+ *  - ekran chetiga yoki pastga/tepaga — onOutside (boshqa sahifa yoki dock)
+ *  - surmasdan qo'yib yuborilsa — onLongPress (menyu)
  */
 @Composable
 fun <T> ReorderGrid(
@@ -176,18 +195,74 @@ fun <T> ReorderGrid(
     onMove: (Int, Int) -> Unit,
     onRemove: ((Int) -> Unit)?,
     modifier: Modifier = Modifier,
+    dragEnabled: Boolean = true,
+    minRows: Int = 1,
+    onTap: ((Int) -> Unit)? = null,
+    onLongPress: ((Int) -> Unit)? = null,
+    onMerge: ((Int, Int) -> Unit)? = null,
+    onOutside: ((Int, DropSide) -> Unit)? = null,
     content: @Composable (Int, T) -> Unit,
 ) {
+    val tapCb by rememberUpdatedState(onTap)
+    val longCb by rememberUpdatedState(onLongPress)
+    val moveCb by rememberUpdatedState(onMove)
+    val mergeCb by rememberUpdatedState(onMerge)
+    val outsideCb by rememberUpdatedState(onOutside)
+    val haptic = LocalHapticFeedback.current
     BoxWithConstraints(modifier.fillMaxWidth()) {
         val cols = columns.coerceAtLeast(1)
         val cellW = maxWidth / cols
         val density = LocalDensity.current
+        val widthPx = with(density) { maxWidth.toPx() }
         val cellWpx = with(density) { cellW.toPx() }
         val cellHpx = with(density) { cellHeight.toPx() }
+        val stillPx = with(density) { 14.dp.toPx() }
         var dragIndex by remember { mutableIntStateOf(-1) }
         var dx by remember { mutableFloatStateOf(0f) }
         var dy by remember { mutableFloatStateOf(0f) }
-        val rows = ((items.size + cols - 1) / cols).coerceAtLeast(1)
+        var hover by remember { mutableIntStateOf(-1) }
+        val rows = ((items.size + cols - 1) / cols).coerceAtLeast(minRows).coerceAtLeast(1)
+        val gridH = cellHpx * rows
+
+        fun targetOf(index: Int): Int {
+            val col = index % cols
+            val row = index / cols
+            val cx = col * cellWpx + dx + cellWpx / 2
+            val cy = row * cellHpx + dy + cellHpx / 2
+            val tc = (cx / cellWpx).toInt().coerceIn(0, cols - 1)
+            val tr = (cy / cellHpx).toInt().coerceAtLeast(0)
+            return tr * cols + tc
+        }
+
+        fun finish(index: Int) {
+            if (index < 0 || index >= items.size) { dragIndex = -1; hover = -1; dx = 0f; dy = 0f; return }
+            val col = index % cols
+            val row = index / cols
+            val dist = hypot(dx, dy)
+            val cx = col * cellWpx + dx + cellWpx / 2
+            val cy = row * cellHpx + dy + cellHpx / 2
+            val out = outsideCb
+            when {
+                dist < stillPx -> if (!editMode) longCb?.invoke(index)
+                out != null && cx < cellWpx * 0.3f -> out(index, DropSide.LEFT)
+                out != null && cx > widthPx - cellWpx * 0.3f -> out(index, DropSide.RIGHT)
+                out != null && cy < -cellHpx * 0.35f -> out(index, DropSide.TOP)
+                out != null && cy > gridH + cellHpx * 0.15f -> out(index, DropSide.BOTTOM)
+                else -> {
+                    val target = targetOf(index)
+                    if (target >= items.size) {
+                        if (index != items.size - 1) moveCb(index, items.size - 1)
+                    } else if (target != index) {
+                        val tcx = (target % cols) * cellWpx + cellWpx / 2
+                        val tcy = (target / cols) * cellHpx + cellHpx / 2
+                        val merge = mergeCb
+                        if (merge != null && hypot(cx - tcx, cy - tcy) < minOf(cellWpx, cellHpx) * 0.28f) merge(index, target)
+                        else moveCb(index, target)
+                    }
+                }
+            }
+            dragIndex = -1; hover = -1; dx = 0f; dy = 0f
+        }
 
         Box(Modifier.fillMaxWidth().height(cellHeight * rows)) {
             items.forEachIndexed { index, item ->
@@ -206,29 +281,57 @@ fun <T> ReorderGrid(
                         .height(cellHeight)
                         .zIndex(if (dragging) 2f else 0f)
                         .graphicsLayer {
-                            val sc = if (dragging) 1.12f else 1f
+                            val sc = if (dragging) 1.15f else if (index == hover) 0.88f else 1f
                             scaleX = sc; scaleY = sc
+                            alpha = if (dragging) 0.9f else 1f
                         }
                         .then(
-                            if (editMode) Modifier.pointerInput(index, items.size, cols) {
-                                detectDragGestures(
-                                    onDragStart = { dragIndex = index; dx = 0f; dy = 0f },
-                                    onDragEnd = {
-                                        val cx = col * cellWpx + dx + cellWpx / 2
-                                        val cy = row * cellHpx + dy + cellHpx / 2
-                                        val tc = (cx / cellWpx).toInt().coerceIn(0, cols - 1)
-                                        val tr = (cy / cellHpx).toInt().coerceAtLeast(0)
-                                        val target = (tr * cols + tc).coerceIn(0, items.size - 1)
-                                        if (target != index) onMove(index, target)
-                                        dragIndex = -1; dx = 0f; dy = 0f
-                                    },
-                                    onDragCancel = { dragIndex = -1; dx = 0f; dy = 0f },
-                                ) { change, amount ->
-                                    change.consume()
-                                    dx += amount.x
-                                    dy += amount.y
+                            if (!dragEnabled && !editMode) Modifier
+                            else Modifier.pointerInput(index, items.size, cols, editMode, cellWpx) {
+                                val slop = viewConfiguration.touchSlop
+                                awaitEachGesture {
+                                    val down = awaitFirstDown(requireUnconsumed = false)
+                                    if (!editMode) {
+                                        // 0 = bosish, 1 = boshqa harakat (sahifa surish), null = uzoq bosish
+                                        val r = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+                                            var res = 1
+                                            while (true) {
+                                                val ev = awaitPointerEvent()
+                                                val ch = ev.changes.firstOrNull { it.id == down.id }
+                                                if (ch == null) { res = 1; break }
+                                                if (!ch.pressed) { ch.consume(); res = 0; break }
+                                                if (ch.isConsumed || (ch.position - down.position).getDistance() > slop) { res = 1; break }
+                                            }
+                                            res
+                                        }
+                                        if (r == 0) { tapCb?.invoke(index); return@awaitEachGesture }
+                                        if (r == 1) return@awaitEachGesture
+                                        DragGuard.lastIconLongPress = SystemClock.uptimeMillis()
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    } else {
+                                        // tahrirlash rejimida: ozgina surilgach darhol ko'chirish boshlanadi
+                                        var started = false
+                                        while (!started) {
+                                            val ev = awaitPointerEvent()
+                                            val ch = ev.changes.firstOrNull { it.id == down.id } ?: return@awaitEachGesture
+                                            if (!ch.pressed) return@awaitEachGesture
+                                            if ((ch.position - down.position).getDistance() > slop) started = true
+                                        }
+                                    }
+                                    dragIndex = index; dx = 0f; dy = 0f
+                                    while (true) {
+                                        val ev = awaitPointerEvent()
+                                        val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
+                                        if (!ch.pressed) { ch.consume(); break }
+                                        val d = ch.positionChange()
+                                        dx += d.x; dy += d.y
+                                        ch.consume()
+                                        val t = targetOf(index)
+                                        hover = if (t != index && t < items.size) t else -1
+                                    }
+                                    finish(index)
                                 }
-                            } else Modifier
+                            }
                         ),
                     contentAlignment = Alignment.TopCenter,
                 ) {

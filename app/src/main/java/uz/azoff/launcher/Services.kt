@@ -18,6 +18,10 @@ class NotificationBadgeService : NotificationListenerService() {
     companion object {
         val counts = MutableStateFlow<Map<String, Int>>(emptyMap())
 
+        /** Turbo rejimda bildirishnomalar sanalmaydi */
+        @Volatile
+        var paused = false
+
         fun isEnabled(context: Context): Boolean =
             NotificationManagerCompat.getEnabledListenerPackages(context).contains(context.packageName)
     }
@@ -30,6 +34,7 @@ class NotificationBadgeService : NotificationListenerService() {
     }
 
     private fun update() {
+        if (paused) return
         try {
             val list = activeNotifications ?: return
             counts.value = list

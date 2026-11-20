@@ -128,7 +128,7 @@ fun AppDrawer(c: Controller, st: LauncherSettings) {
     Column(
         Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.surface.copy(alpha = st.drawerAlpha))
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = if (st.turbo) 1f else st.drawerAlpha))
             .systemBarsPadding()
             .imePadding()
     ) {
@@ -269,7 +269,7 @@ private fun AlphabetGrid(
                         iconSize = st.iconSize.dp,
                         showLabel = true,
                         labelStyle = TextStyle(color = textColor),
-                        badge = if (st.badges) badges[app.packageName] ?: 0 else 0,
+                        badge = if (st.badgesOn) badges[app.packageName] ?: 0 else 0,
                         locked = app.key in st.locked,
                         onClick = { c.launch(app) },
                         onLongClick = if (st.kidsMode) null else ({ c.menu = app to MenuSource() }),
@@ -358,7 +358,7 @@ private fun SearchResults(c: Controller, st: LauncherSettings, query: String, vi
                                 iconSize = st.iconSize.dp,
                                 showLabel = true,
                                 labelStyle = TextStyle(color = textColor),
-                                badge = if (st.badges) badges[app.packageName] ?: 0 else 0,
+                                badge = if (st.badgesOn) badges[app.packageName] ?: 0 else 0,
                                 locked = app.key in st.locked,
                                 onClick = { c.launch(app) },
                                 onLongClick = if (st.kidsMode) null else ({ c.menu = app to MenuSource() }),

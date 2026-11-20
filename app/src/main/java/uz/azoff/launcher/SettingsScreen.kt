@@ -63,7 +63,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlin.math.roundToInt
 
-private val gestureActions = listOf("none", "drawer", "search", "notifications", "quick_settings", "lock", "recents", "settings", "wallpaper", "app")
+private val gestureActions = listOf("none", "drawer", "search", "notifications", "quick_settings", "lock", "recents", "turbo", "settings", "wallpaper", "app")
 
 @Composable
 fun SettingsScreen(c: Controller, st: LauncherSettings) {
@@ -118,6 +118,17 @@ fun SettingsScreen(c: Controller, st: LauncherSettings) {
                     }
                 }
 
+                // ---------- Turbo ----------
+                item { Section("⚡ " + s.turboSection) }
+                item {
+                    SwitchRow(s.turboMode, s.turboDesc, st.turbo) { v -> update { it.copy(turbo = v, turboByAuto = false) } }
+                }
+                item { SwitchRow(s.autoTurbo, s.autoTurboDesc(st.autoTurboLevel), st.autoTurbo) { v -> update { it.copy(autoTurbo = v) } } }
+                if (st.autoTurbo) {
+                    item { SliderRow(s.autoTurboLevel, st.autoTurboLevel, 5, 50, suffix = "%") { v -> update { it.copy(autoTurboLevel = v) } } }
+                }
+                item { SwitchRow(s.followPowerSave, s.followPowerSaveDesc, st.followPowerSave) { v -> update { it.copy(followPowerSave = v) } } }
+
                 // ---------- Ko'rinish ----------
                 item { Section(s.appearance) }
                 item { ClickRow(s.language, languageName(st.language)) { dialog = "lang" } }
@@ -145,7 +156,9 @@ fun SettingsScreen(c: Controller, st: LauncherSettings) {
                         ClickRow(s.city, (Weather.cities.getOrNull(st.weatherCity) ?: Weather.cities[0]).name) { dialog = "city" }
                     }
                 }
+                item { SwitchRow(s.drawerless, s.drawerlessDesc, st.drawerless) { v -> update { it.copy(drawerless = v) } } }
                 item { SliderRow(s.homeColumns, st.homeColumns, 3, 6) { v -> update { it.copy(homeColumns = v) } } }
+                item { SliderRow(s.homeRows, st.homeRows, 3, 8) { v -> update { it.copy(homeRows = v) } } }
                 item { SwitchRow(s.badges, if (notifOk) s.badgesDesc else s.badgesNeedAccess, st.badges) { v -> update { it.copy(badges = v) } } }
                 if (st.badges && !notifOk) {
                     item { ClickRow(s.grantAccess, s.restrictedHint) { SystemActions.openNotificationAccess(ctx) } }

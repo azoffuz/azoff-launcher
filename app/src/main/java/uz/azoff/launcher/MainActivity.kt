@@ -3,8 +3,13 @@ package uz.azoff.launcher
 import android.appwidget.AppWidgetHost
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProviderInfo
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.os.BatteryManager
 import android.os.Bundle
+import android.os.PowerManager
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -42,14 +47,55 @@ class MainActivity : FragmentActivity() {
         setContent { LauncherRoot(this) }
     }
 
+    private var widgetsListening = false
+
+    /** Turbo rejimda vidjetlar yangilanmaydi (batareya tejaladi) */
+    fun setWidgetsActive(active: Boolean) {
+        try {
+            if (active && !widgetsListening) { widgetHost.startListening(); widgetsListening = true }
+            if (!active && widgetsListening) { widgetHost.stopListening(); widgetsListening = false }
+        } catch (_: Exception) {
+        }
+    }
+
+    private val batteryReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            checkBattery(registerReceiverSticky())
+        }
+    }
+
+    private fun registerReceiverSticky(): Intent? =
+        try { registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED)) } catch (e: Exception) { null }
+
+    private fun checkBattery(i: Intent?) {
+        if (i == null) return
+        val level = i.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+        val scale = i.getIntExtra(BatteryManager.EXTRA_SCALE, 100).coerceAtLeast(1)
+        val pct = if (level < 0) -1 else level * 100 / scale
+        val status = i.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
+        val charging = status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL
+        val ps = (getSystemService(Context.POWER_SERVICE) as PowerManager).isPowerSaveMode
+        vm.onBattery(pct, charging, ps)
+    }
+
     override fun onStart() {
         super.onStart()
-        try { widgetHost.startListening() } catch (_: Exception) {}
+        setWidgetsActive(vm.settings.value.widgetsOn)
+        try {
+            val f = IntentFilter().apply {
+                addAction(Intent.ACTION_BATTERY_CHANGED)
+                addAction(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED)
+            }
+            ContextCompat.registerReceiver(this, batteryReceiver, f, ContextCompat.RECEIVER_NOT_EXPORTED)
+        } catch (_: Exception) {
+        }
+        checkBattery(registerReceiverSticky())
     }
 
     override fun onStop() {
         super.onStop()
-        try { widgetHost.stopListening() } catch (_: Exception) {}
+        setWidgetsActive(false)
+        try { unregisterReceiver(batteryReceiver) } catch (_: Exception) {}
     }
 
     override fun onResume() {

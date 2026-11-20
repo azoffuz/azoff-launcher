@@ -40,7 +40,23 @@ data class LauncherSettings(
     val badges: Boolean = true,
     val frequentOnTop: Boolean = true,
     val firstRun: Boolean = true,
-)
+    // Turbo (batareya tejash) rejimi
+    val turbo: Boolean = false,
+    val autoTurbo: Boolean = false,
+    val autoTurboLevel: Int = 20,
+    val followPowerSave: Boolean = true,
+    val turboByAuto: Boolean = false,
+    // Menyusiz rejim: barcha ilovalar bosh ekranda
+    val drawerless: Boolean = false,
+    val homeRows: Int = 5,
+) {
+    /** Turbo rejimni hisobga olgan holdagi haqiqiy qiymatlar */
+    val anim: Boolean get() = animations && !turbo
+    val weatherOn: Boolean get() = showWeather && !turbo
+    val badgesOn: Boolean get() = badges && !turbo
+    val widgetsOn: Boolean get() = !turbo
+    val capacity: Int get() = (homeColumns * homeRows).coerceAtLeast(4)
+}
 
 object SettingsJson {
     private fun JSONArray.strings(): List<String> = (0 until length()).map { getString(it) }
@@ -95,6 +111,13 @@ object SettingsJson {
         o.put("badges", s.badges)
         o.put("frequentOnTop", s.frequentOnTop)
         o.put("firstRun", s.firstRun)
+        o.put("turbo", s.turbo)
+        o.put("autoTurbo", s.autoTurbo)
+        o.put("autoTurboLevel", s.autoTurboLevel)
+        o.put("followPowerSave", s.followPowerSave)
+        o.put("turboByAuto", s.turboByAuto)
+        o.put("drawerless", s.drawerless)
+        o.put("homeRows", s.homeRows)
         o.put("format", "azoff-launcher-1")
         return o.toString(2)
     }
@@ -159,6 +182,13 @@ object SettingsJson {
             badges = o.optBoolean("badges", d.badges),
             frequentOnTop = o.optBoolean("frequentOnTop", d.frequentOnTop),
             firstRun = o.optBoolean("firstRun", false),
+            turbo = o.optBoolean("turbo", d.turbo),
+            autoTurbo = o.optBoolean("autoTurbo", d.autoTurbo),
+            autoTurboLevel = o.optInt("autoTurboLevel", d.autoTurboLevel),
+            followPowerSave = o.optBoolean("followPowerSave", d.followPowerSave),
+            turboByAuto = o.optBoolean("turboByAuto", d.turboByAuto),
+            drawerless = o.optBoolean("drawerless", d.drawerless),
+            homeRows = o.optInt("homeRows", d.homeRows),
         )
     }
 }
@@ -189,7 +219,74 @@ fun LauncherSettings.folders(): List<HomeItem.Folder> =
 fun LauncherSettings.addToPage(key: String, page: Int): LauncherSettings {
     if (homeKeys().contains(key)) return this
     val p = page.coerceIn(0, pages.size - 1)
-    return copy(pages = pages.mapIndexed { i, items -> if (i == p) items + HomeItem.App(key) else items })
+    // sahifa to'la bo'lsa, keyingi bo'sh joyga yoki yangi sahifaga qo'yamiz
+    val order = listOf(p) + pages.indices.filter { it != p }
+    val target = order.firstOrNull { pages[it].size < capacity }
+    return if (target != null) {
+        copy(pages = pages.mapIndexed { i, items -> if (i == target) items + HomeItem.App(key) else items })
+    } else {
+        copy(pages = pages + listOf(listOf(HomeItem.App(key))))
+    }
+}
+
+/** Menyusiz rejim: bosh ekranda yo'q barcha ilovalarni oxiriga qo'shadi */
+fun LauncherSettings.syncAllApps(keys: List<String>): LauncherSettings {
+    val present = homeKeys() + dock
+    var s = this
+    keys.filter { it !in present && it !in hidden }.forEach { k ->
+        val last = s.pages.size - 1
+        s = if (s.pages[last].size < s.capacity) {
+            s.copy(pages = s.pages.mapIndexed { i, items -> if (i == last) items + HomeItem.App(k) else items })
+        } else {
+            s.copy(pages = s.pages + listOf(listOf(HomeItem.App(k))))
+        }
+    }
+    return s
+}
+
+/** Element boshqa sahifaga ko'chiriladi (kerak bo'lsa yangi sahifa yaratiladi). false — sahifa to'la */
+fun LauncherSettings.moveToPage(page: Int, index: Int, target: Int): LauncherSettings? {
+    if (page !in pages.indices || target < 0) return null
+    val item = pages[page].getOrNull(index) ?: return null
+    val base = if (target >= pages.size) copy(pages = pages + listOf(emptyList())) else this
+    if (base.pages[target].size >= capacity) return null
+    return base.copy(pages = base.pages.mapIndexed { i, items ->
+        when (i) {
+            page -> items.filterIndexed { j, _ -> j != index }
+            target -> items + item
+            else -> items
+        }
+    })
+}
+
+/** Bir elementni ikkinchisining ustiga tashlash: papka yaratish yoki papkaga qo'shish */
+fun LauncherSettings.mergeItems(page: Int, from: Int, to: Int, defaultName: String): LauncherSettings {
+    val items = pages.getOrNull(page) ?: return this
+    val a = items.getOrNull(from) ?: return this
+    val b = items.getOrNull(to) ?: return this
+    if (a !is HomeItem.App) return moveItem(page, from, to)
+    val merged: HomeItem = when (b) {
+        is HomeItem.Folder -> b.copy(keys = b.keys + a.key)
+        is HomeItem.App -> HomeItem.Folder(UUID.randomUUID().toString(), defaultName, listOf(b.key, a.key))
+    }
+    val list = items.toMutableList()
+    list[to] = merged
+    list.removeAt(from)
+    return copy(pages = pages.mapIndexed { i, l -> if (i == page) list else l })
+}
+
+fun LauncherSettings.pageToDock(page: Int, index: Int): LauncherSettings? {
+    val item = pages.getOrNull(page)?.getOrNull(index) as? HomeItem.App ?: return null
+    if (dock.size >= 5 || item.key in dock) return null
+    return copy(
+        pages = pages.mapIndexed { i, l -> if (i == page) l.filterIndexed { j, _ -> j != index } else l },
+        dock = dock + item.key,
+    )
+}
+
+fun LauncherSettings.dockToPage(dockIndex: Int, page: Int): LauncherSettings {
+    val key = dock.getOrNull(dockIndex) ?: return this
+    return copy(dock = dock - key).addToPage(key, page)
 }
 
 fun LauncherSettings.removeFromHome(key: String): LauncherSettings =

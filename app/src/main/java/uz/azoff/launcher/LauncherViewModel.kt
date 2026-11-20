@@ -26,6 +26,7 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
     private val callback: LauncherApps.Callback
 
     init {
+        NotificationBadgeService.paused = settings.value.turbo
         reloadApps()
         callback = repo.registerCallback { reloadApps() }
     }
@@ -42,12 +43,16 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
 
     fun update(transform: (LauncherSettings) -> LauncherSettings) {
         val old = settings.value
-        val new = transform(old)
+        var new = transform(old)
+        if (new.drawerless && !old.drawerless && new.swipeUp == "drawer") new = new.copy(swipeUp = "search")
+        if (new.drawerless && apps.value.isNotEmpty()) new = new.syncAllApps(apps.value.map { it.key })
         if (new == old) return
+        NotificationBadgeService.paused = new.turbo
+        if (new.turbo && !old.turbo) NotificationBadgeService.counts.value = emptyMap()
         settings.value = new
         prefs.edit().putString("settings", SettingsJson.toJson(new)).apply()
         if (old.iconPack != new.iconPack) reloadApps()
-        if (old.weatherCity != new.weatherCity || (!old.showWeather && new.showWeather)) refreshWeather(force = true)
+        if (old.weatherCity != new.weatherCity || (!old.weatherOn && new.weatherOn)) refreshWeather(force = true)
     }
 
     fun reloadApps() {
@@ -67,13 +72,24 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Batareya holati: avtomatik Turbo rejim */
+    fun onBattery(level: Int, charging: Boolean, powerSave: Boolean) {
+        val s = settings.value
+        val low = (s.autoTurbo && level in 0..s.autoTurboLevel && !charging) || (s.followPowerSave && powerSave)
+        if (low && !s.turbo) {
+            update { it.copy(turbo = true, turboByAuto = true) }
+        } else if (!low && s.turbo && s.turboByAuto) {
+            update { it.copy(turbo = false, turboByAuto = false) }
+        }
+    }
+
     fun onResume() {
         refreshWeather(force = false)
     }
 
     fun refreshWeather(force: Boolean) {
         val s = settings.value
-        if (!s.showWeather) return
+        if (!s.weatherOn) return
         val now = System.currentTimeMillis()
         if (!force && now - lastWeather < 30 * 60 * 1000L && weather.value != null) return
         lastWeather = now
@@ -84,7 +100,7 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun launch(app: AppInfo): Boolean {
-        val ok = repo.start(app, settings.value.animations)
+        val ok = repo.start(app, settings.value.anim)
         if (ok) update { it.copy(usage = it.usage + (app.key to ((it.usage[app.key] ?: 0) + 1))) }
         return ok
     }

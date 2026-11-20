@@ -82,6 +82,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -101,6 +102,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import android.os.SystemClock
 import java.util.Calendar
 import kotlin.math.roundToInt
 
@@ -154,6 +157,12 @@ class Controller(val activity: MainActivity, val vm: LauncherViewModel) {
         if (app.key in settings.locked) requireAuth(go) else go()
     }
 
+    fun toggleTurbo() {
+        val on = !settings.turbo
+        vm.update { it.copy(turbo = on, turboByAuto = false) }
+        toast(if (on) s.turboOnToast else s.turboOffToast)
+    }
+
     fun openSettings() {
         if (settings.kidsMode) requireAuth { settingsOpen = true } else settingsOpen = true
     }
@@ -173,6 +182,7 @@ class Controller(val activity: MainActivity, val vm: LauncherViewModel) {
             }
             code == "settings" -> openSettings()
             code == "wallpaper" -> SystemActions.setWallpaper(activity)
+            code == "turbo" -> toggleTurbo()
             code.startsWith("app:") -> vm.apps.value.firstOrNull { it.key == code.removePrefix("app:") }?.let { launch(it) }
         }
     }
@@ -189,6 +199,7 @@ fun LauncherRoot(activity: MainActivity) {
     LaunchedEffect(Unit) {
         activity.homePressed.collect { if (it > 0) c.closeAll() }
     }
+    LaunchedEffect(settings.widgetsOn) { activity.setWidgetsActive(settings.widgetsOn) }
 
     CompositionLocalProvider(LocalStrings provides s) {
         AzoffTheme(settings) {
@@ -203,8 +214,8 @@ fun LauncherRoot(activity: MainActivity) {
                 if (settings.kidsMode) KidsHome(c, settings) else HomeScreen(c, settings)
                 AnimatedVisibility(
                     visible = c.drawerOpen,
-                    enter = if (settings.animations) slideInVertically { it / 4 } + fadeIn() else EnterTransition.None,
-                    exit = if (settings.animations) slideOutVertically { it / 4 } + fadeOut() else ExitTransition.None,
+                    enter = if (settings.anim) slideInVertically { it / 4 } + fadeIn() else EnterTransition.None,
+                    exit = if (settings.anim) slideOutVertically { it / 4 } + fadeOut() else ExitTransition.None,
                 ) {
                     AppDrawer(c, settings)
                 }
@@ -222,19 +233,29 @@ fun HomeScreen(c: Controller, st: LauncherSettings) {
     val apps by c.vm.apps.collectAsStateWithLifecycle()
     val byKey = remember(apps) { apps.associateBy { it.key } }
     val badges by NotificationBadgeService.counts.collectAsStateWithLifecycle()
-    val pageCount = st.pages.size + 1 // 0-sahifa: vidjetlar
-    val pager = rememberPagerState(initialPage = 1) { pageCount }
+    // Turbo rejimda vidjetlar sahifasi yo'q
+    val wOff = if (st.widgetsOn) 1 else 0
+    val pageCount = st.pages.size + wOff
+    val pager = rememberPagerState(initialPage = wOff) { pageCount }
     val home by c.activity.homePressed.collectAsStateWithLifecycle()
     val stState = rememberUpdatedState(st)
-
-    LaunchedEffect(pager.currentPage) { c.currentPage = (pager.currentPage - 1).coerceAtLeast(0) }
-    LaunchedEffect(home) {
-        if (home > 0 && pager.currentPage != 1) {
-            if (stState.value.animations) pager.animateScrollToPage(1) else pager.scrollToPage(1)
+    val scope = rememberCoroutineScope()
+    val goToPage: (Int) -> Unit = { homeIndex ->
+        scope.launch {
+            val target = (homeIndex + wOff).coerceIn(0, (pager.pageCount - 1).coerceAtLeast(0))
+            if (stState.value.anim) pager.animateScrollToPage(target) else pager.scrollToPage(target)
         }
     }
+
+    LaunchedEffect(pager.currentPage, wOff) { c.currentPage = (pager.currentPage - wOff).coerceAtLeast(0) }
+    LaunchedEffect(home) {
+        if (home > 0 && pager.currentPage != wOff) {
+            if (stState.value.anim) pager.animateScrollToPage(wOff) else pager.scrollToPage(wOff)
+        }
+    }
+    LaunchedEffect(wOff) { pager.scrollToPage((c.currentPage + wOff).coerceIn(0, (pageCount - 1).coerceAtLeast(0))) }
     LaunchedEffect(pageCount) {
-        if (pager.currentPage >= pageCount) pager.scrollToPage(pageCount - 1)
+        if (pager.currentPage >= pageCount) pager.scrollToPage((pageCount - 1).coerceAtLeast(0))
     }
 
     Box(
@@ -244,7 +265,13 @@ fun HomeScreen(c: Controller, st: LauncherSettings) {
             .pointerInput(Unit) {
                 detectTapGestures(
                     onDoubleTap = { c.runAction(stState.value.doubleTap) },
-                    onLongPress = { c.homeMenu = true },
+                    onLongPress = {
+                        // ikonka ustida uzoq bosilgan bo'lsa, menyu ochilmaydi
+                        scope.launch {
+                            delay(80)
+                            if (SystemClock.uptimeMillis() - DragGuard.lastIconLongPress > 600) c.homeMenu = true
+                        }
+                    },
                 )
             }
             .pointerInput(Unit) {
@@ -269,10 +296,10 @@ fun HomeScreen(c: Controller, st: LauncherSettings) {
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 beyondViewportPageCount = 1,
             ) { page ->
-                if (page == 0) WidgetsPage(c, st)
-                else HomePage(c, st, page - 1, byKey, badges)
+                if (page < wOff) WidgetsPage(c, st)
+                else HomePage(c, st, page - wOff, byKey, badges, goToPage)
             }
-            PageDots(pager.currentPage, pageCount)
+            PageDots(pager.currentPage, pageCount, wOff == 1)
             Dock(c, st, byKey, badges)
         }
     }
@@ -280,7 +307,7 @@ fun HomeScreen(c: Controller, st: LauncherSettings) {
 
 @Composable
 fun ClockHeader(c: Controller, st: LauncherSettings) {
-    if (!st.showClock && !st.showWeather) {
+    if (!st.showClock && !st.weatherOn && !st.turbo) {
         Spacer(Modifier.height(16.dp)); return
     }
     val s = LocalStrings.current
@@ -289,7 +316,8 @@ fun ClockHeader(c: Controller, st: LauncherSettings) {
     LaunchedEffect(Unit) {
         while (true) {
             now = System.currentTimeMillis()
-            delay(1000L - now % 1000L)
+            // faqat daqiqada bir marta yangilanadi (batareya uchun)
+            delay(60_000L - now % 60_000L + 50L)
         }
     }
     val weather by c.vm.weather.collectAsStateWithLifecycle()
@@ -315,7 +343,20 @@ fun ClockHeader(c: Controller, st: LauncherSettings) {
                 },
             )
         }
-        if (st.showWeather) {
+        if (st.turbo) {
+            Text(
+                "⚡ " + s.turboOn,
+                style = wallpaperText,
+                fontSize = 14.sp,
+                modifier = Modifier
+                    .padding(top = 6.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color(0xFFF59E0B).copy(alpha = 0.35f))
+                    .clickable { c.vm.update { it.copy(turbo = false, turboByAuto = false) } }
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+            )
+        }
+        if (st.weatherOn) {
             val city = Weather.cities.getOrNull(st.weatherCity) ?: Weather.cities[0]
             val w = weather
             Text(
@@ -345,15 +386,36 @@ fun EditBar(c: Controller, st: LauncherSettings) {
         TextButton(onClick = { c.addAppPage = c.currentPage }) { Text(s.addApp) }
         TextButton(onClick = { c.vm.update { it.addPage() } }) { Text(s.addPage) }
         if (st.pages.size > 1) TextButton(onClick = { c.vm.update { it.removePage(c.currentPage) } }) { Text(s.removePage) }
-        TextButton(onClick = { c.widgetPicker = true }) { Text(s.addWidget) }
+        if (st.widgetsOn) TextButton(onClick = { c.widgetPicker = true }) { Text(s.addWidget) }
         Button(onClick = { c.editMode = false }) { Text(s.done) }
     }
 }
 
 @Composable
-fun HomePage(c: Controller, st: LauncherSettings, pageIndex: Int, byKey: Map<String, AppInfo>, badges: Map<String, Int>) {
+fun HomePage(
+    c: Controller,
+    st: LauncherSettings,
+    pageIndex: Int,
+    byKey: Map<String, AppInfo>,
+    badges: Map<String, Int>,
+    goToPage: (Int) -> Unit,
+) {
     val s = LocalStrings.current
     val items = st.pages.getOrNull(pageIndex) ?: emptyList()
+    val openItem: (Int) -> Unit = { i ->
+        when (val x = items.getOrNull(i)) {
+            is HomeItem.App -> byKey[x.key]?.let { app -> c.launch(app) }
+            is HomeItem.Folder -> c.openFolderId = x.id
+            null -> {}
+        }
+    }
+    val menuFor: (Int) -> Unit = { i ->
+        when (val x = items.getOrNull(i)) {
+            is HomeItem.App -> byKey[x.key]?.let { app -> c.menu = app to MenuSource(page = pageIndex) }
+            is HomeItem.Folder -> c.openFolderId = x.id
+            null -> {}
+        }
+    }
     Column(Modifier.fillMaxSize().padding(horizontal = 8.dp)) {
         Spacer(Modifier.height(8.dp))
         if (items.isEmpty() && c.editMode) {
@@ -364,10 +426,35 @@ fun HomePage(c: Controller, st: LauncherSettings, pageIndex: Int, byKey: Map<Str
             columns = st.homeColumns,
             cellHeight = cellHeight(st.iconSize, st.showLabels),
             editMode = c.editMode,
+            minRows = st.homeRows,
+            onTap = { i -> if (!c.editMode) openItem(i) },
+            onLongPress = menuFor,
             onMove = { f, t -> c.vm.update { it.moveItem(pageIndex, f, t) } },
+            onMerge = { f, t -> c.vm.update { it.mergeItems(pageIndex, f, t, s.folder) } },
+            onOutside = { i, side ->
+                when (side) {
+                    DropSide.LEFT -> if (pageIndex > 0) {
+                        val n = st.moveToPage(pageIndex, i, pageIndex - 1)
+                        if (n == null) c.toast(s.pageFull) else { c.vm.update { n }; goToPage(pageIndex - 1) }
+                    }
+                    DropSide.RIGHT -> {
+                        val n = st.moveToPage(pageIndex, i, pageIndex + 1)
+                        if (n == null) c.toast(s.pageFull) else { c.vm.update { n }; goToPage(pageIndex + 1) }
+                    }
+                    DropSide.BOTTOM -> {
+                        val n = st.pageToDock(pageIndex, i)
+                        if (n == null) c.toast(s.dockFull) else c.vm.update { n }
+                    }
+                    DropSide.TOP -> {}
+                }
+            },
             onRemove = { i ->
-                c.vm.update { x ->
-                    x.copy(pages = x.pages.mapIndexed { p, l -> if (p == pageIndex) l.filterIndexed { j, _ -> j != i } else l })
+                if (st.drawerless && items.getOrNull(i) is HomeItem.App) {
+                    c.toast(s.drawerlessRemoveHint)
+                } else {
+                    c.vm.update { x ->
+                        x.copy(pages = x.pages.mapIndexed { p, l -> if (p == pageIndex) l.filterIndexed { j, _ -> j != i } else l })
+                    }
                 }
             },
         ) { _, item ->
@@ -378,10 +465,10 @@ fun HomePage(c: Controller, st: LauncherSettings, pageIndex: Int, byKey: Map<Str
                         iconSize = st.iconSize.dp,
                         showLabel = st.showLabels,
                         labelStyle = wallpaperText,
-                        badge = if (st.badges) badges[app.packageName] ?: 0 else 0,
+                        badge = if (st.badgesOn) badges[app.packageName] ?: 0 else 0,
                         locked = app.key in st.locked,
-                        onClick = { if (!c.editMode) c.launch(app) },
-                        onLongClick = { if (!c.editMode) c.menu = app to MenuSource(page = pageIndex) },
+                        onClick = null,
+                        onLongClick = null,
                     )
                 }
                 is HomeItem.Folder -> FolderIconView(
@@ -390,8 +477,8 @@ fun HomePage(c: Controller, st: LauncherSettings, pageIndex: Int, byKey: Map<Str
                     iconSize = st.iconSize.dp,
                     showLabel = st.showLabels,
                     labelStyle = wallpaperText,
-                    onClick = { if (!c.editMode) c.openFolderId = item.id },
-                    onLongClick = { if (!c.editMode) c.openFolderId = item.id },
+                    onClick = null,
+                    onLongClick = null,
                 )
             }
         }
@@ -455,7 +542,7 @@ fun HostedWidget(c: Controller, id: Int) {
 }
 
 @Composable
-fun PageDots(current: Int, count: Int) {
+fun PageDots(current: Int, count: Int, hasWidgets: Boolean) {
     Row(
         Modifier.fillMaxWidth().padding(vertical = 6.dp),
         horizontalArrangement = Arrangement.Center,
@@ -465,7 +552,7 @@ fun PageDots(current: Int, count: Int) {
                 Modifier
                     .padding(horizontal = 3.dp)
                     .size(if (i == current) 8.dp else 6.dp)
-                    .clip(if (i == 0) RoundedCornerShape(2.dp) else CircleShape)
+                    .clip(if (i == 0 && hasWidgets) RoundedCornerShape(2.dp) else CircleShape)
                     .background(Color.White.copy(alpha = if (i == current) 0.95f else 0.45f))
             )
         }
@@ -494,7 +581,15 @@ fun Dock(c: Controller, st: LauncherSettings, byKey: Map<String, AppInfo>, badge
                 columns = dockApps.size,
                 cellHeight = (st.iconSize + 14).dp,
                 editMode = c.editMode,
+                onTap = { i -> if (!c.editMode) dockApps.getOrNull(i)?.let { c.launch(it) } },
+                onLongPress = { i -> dockApps.getOrNull(i)?.let { c.menu = it to MenuSource() } },
                 onMove = { f, t -> c.vm.update { it.moveDock(f, t) } },
+                onOutside = { i, side ->
+                    if (side == DropSide.TOP) {
+                        val k = dockApps.getOrNull(i)?.key
+                        if (k != null) c.vm.update { x -> x.dockToPage(x.dock.indexOf(k), c.currentPage) }
+                    }
+                },
                 onRemove = { i -> c.vm.update { it.toggleDock(dockApps[i].key) } },
             ) { _, app ->
                 AppIconView(
@@ -502,10 +597,10 @@ fun Dock(c: Controller, st: LauncherSettings, byKey: Map<String, AppInfo>, badge
                     iconSize = st.iconSize.dp,
                     showLabel = false,
                     labelStyle = wallpaperText,
-                    badge = if (st.badges) badges[app.packageName] ?: 0 else 0,
+                    badge = if (st.badgesOn) badges[app.packageName] ?: 0 else 0,
                     locked = app.key in st.locked,
-                    onClick = { if (!c.editMode) c.launch(app) },
-                    onLongClick = { if (!c.editMode) c.menu = app to MenuSource() },
+                    onClick = null,
+                    onLongClick = null,
                 )
             }
         }
@@ -627,7 +722,9 @@ fun AppMenuDialog(c: Controller, st: LauncherSettings, app: AppInfo, src: MenuSo
                     c.vm.update { it.removeFromFolder(fid, app.key) }; dismiss()
                 }
             }
-            if (!onHome) {
+            if (st.drawerless) {
+                // menyusiz rejimda barcha ilovalar doim bosh ekranda
+            } else if (!onHome) {
                 MenuRow(s.addToHome, icon = { Icon(Icons.Filled.Home, null) }) {
                     c.vm.update { it.addToPage(app.key, c.currentPage) }; c.toast(s.added); dismiss()
                 }
@@ -707,7 +804,7 @@ fun FolderDialog(c: Controller, st: LauncherSettings, id: String, byKey: Map<Str
                     iconSize = 52.dp,
                     showLabel = true,
                     labelStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface),
-                    badge = if (st.badges) badges[app.packageName] ?: 0 else 0,
+                    badge = if (st.badgesOn) badges[app.packageName] ?: 0 else 0,
                     locked = app.key in st.locked,
                     onClick = { c.launch(app) },
                     onLongClick = { c.menu = app to MenuSource(folderId = id) },
@@ -852,8 +949,12 @@ fun HomeMenuDialog(c: Controller, st: LauncherSettings) {
             MenuRow(s.launcherSettings, icon = { Icon(Icons.Filled.Settings, null) }) { close(); c.openSettings() }
             return@SheetDialog
         }
+        MenuRow(
+            if (st.turbo) s.turboDisable else s.turboEnable,
+            icon = { Text("⚡", fontSize = 18.sp) },
+        ) { close(); c.toggleTurbo() }
         MenuRow(s.editHome, icon = { Icon(Icons.Filled.Edit, null) }) { close(); c.editMode = true }
-        MenuRow(s.addWidget, icon = { Icon(Icons.Filled.Add, null) }) { close(); c.widgetPicker = true }
+        if (st.widgetsOn) MenuRow(s.addWidget, icon = { Icon(Icons.Filled.Add, null) }) { close(); c.widgetPicker = true }
         MenuRow(s.wallpaper, icon = { Icon(Icons.Filled.Face, null) }) { close(); SystemActions.setWallpaper(c.activity) }
         MenuRow(s.hiddenApps, icon = { Icon(Icons.Filled.Lock, null) }) { close(); c.requireAuth { c.hiddenOpen = true } }
         MenuRow(s.launcherSettings, icon = { Icon(Icons.Filled.Settings, null) }) { close(); c.openSettings() }

@@ -40,14 +40,22 @@ fun isDark(settings: LauncherSettings): Boolean = when (settings.theme) {
 
 @Composable
 fun AzoffTheme(settings: LauncherSettings, content: @Composable () -> Unit) {
-    val dark = isDark(settings)
+    val dark = isDark(settings) || settings.turbo
     val ctx = LocalContext.current
-    val scheme = if (settings.dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+    val base = if (settings.dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         if (dark) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)
     } else {
         val a = accentColors[settings.accent.coerceIn(0, accentColors.size - 1)]
         if (dark) darkColorScheme(primary = a, secondary = a, tertiary = a)
         else lightColorScheme(primary = a, secondary = a, tertiary = a)
     }
+    // Turbo: AMOLED ekranda qora rang deyarli quvvat sarflamaydi
+    val scheme = if (settings.turbo) base.copy(
+        background = Color.Black,
+        surface = Color.Black,
+        surfaceContainer = Color.Black,
+        surfaceContainerLow = Color.Black,
+        surfaceContainerLowest = Color.Black,
+    ) else base
     MaterialTheme(colorScheme = scheme, content = content)
 }

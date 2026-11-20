@@ -40,11 +40,12 @@ class Strings(val lang: String) {
     val addPage = t("Sahifa qo'shish", "Добавить страницу", "Add page")
     val removePage = t("Sahifani o'chirish", "Удалить страницу", "Remove page")
     val editHome = t("Bosh ekranni tahrirlash", "Изменить главный экран", "Edit home screen")
-    val emptyPageHint = t(
+    val emptyPageHintOld = t(
         "Bo'sh sahifa. Yuqoridagi \"Ilova qo'shish\" tugmasidan foydalaning.",
         "Пустая страница. Используйте «Добавить приложение» сверху.",
         "Empty page. Use \"Add app\" above.",
     )
+    val emptyPageHint get() = dragHint
     val dockHint = t("Dock bo'sh. Ilovaga uzoq bosib \"Dock'ga qo'shish\"ni tanlang.", "Док пуст. Удерживайте приложение и выберите «В док».", "Dock is empty. Long-press an app and choose \"Add to dock\".")
     val wallpaper = t("Fon rasmi", "Обои", "Wallpaper")
     val launcherSettings = t("Launcher sozlamalari", "Настройки лаунчера", "Launcher settings")
@@ -160,6 +161,7 @@ class Strings(val lang: String) {
         code == "recents" -> t("So'nggi ilovalar", "Недавние приложения", "Recent apps")
         code == "settings" -> t("Launcher sozlamalari", "Настройки лаунчера", "Launcher settings")
         code == "wallpaper" -> t("Fon rasmini o'zgartirish", "Сменить обои", "Change wallpaper")
+        code == "turbo" -> t("Turbo rejimni yoqish/oʻchirish", "Вкл/выкл турбо-режим", "Toggle Turbo mode")
         code == "app" -> t("Ilovani ochish…", "Открыть приложение…", "Open an app…")
         code.startsWith("app:") -> {
             val k = code.removePrefix("app:")
@@ -168,6 +170,51 @@ class Strings(val lang: String) {
         }
         else -> code
     }
+
+    // Turbo va menyusiz rejim
+    val turboSection = t("Batareya va tezlik", "Батарея и скорость", "Battery & speed")
+    val turboMode = t("Turbo rejim", "Турбо-режим", "Turbo mode")
+    val turboDesc = t(
+        "Animatsiyalar, ob-havo, vidjetlar va bildirishnoma nuqtalari oʻchadi, qora mavzu yoqiladi — maksimal tezlik va batareya tejash",
+        "Отключает анимации, погоду, виджеты и значки, включает чёрную тему — максимум скорости и экономии",
+        "Turns off animations, weather, widgets and badges, uses a pure black theme — maximum speed and battery life",
+    )
+    val turboOn = t("Turbo rejim", "Турбо-режим", "Turbo mode")
+    val turboEnable = t("Turbo rejimni yoqish", "Включить турбо-режим", "Turn on Turbo mode")
+    val turboDisable = t("Turbo rejimni oʻchirish", "Выключить турбо-режим", "Turn off Turbo mode")
+    val turboOnToast = t("⚡ Turbo rejim yoqildi", "⚡ Турбо-режим включён", "⚡ Turbo mode on")
+    val turboOffToast = t("Turbo rejim oʻchirildi", "Турбо-режим выключен", "Turbo mode off")
+    val autoTurbo = t("Avtomatik Turbo", "Авто-турбо", "Auto Turbo")
+    fun autoTurboDesc(level: Int) = t(
+        "Batareya $level% dan pastga tushganda yoqiladi, quvvatlanganda oʻchadi",
+        "Включается при заряде ниже $level%, выключается при зарядке",
+        "Turns on below $level% battery, off when charging",
+    )
+    val autoTurboLevel = t("Batareya chegarasi", "Порог заряда", "Battery threshold")
+    val followPowerSave = t("Quvvat tejash rejimiga ergashish", "Следовать режиму энергосбережения", "Follow battery saver")
+    val followPowerSaveDesc = t(
+        "Telefonning quvvat tejash rejimi yoqilsa, Turbo ham yoqiladi",
+        "Турбо включается вместе с системным энергосбережением",
+        "Turbo turns on together with system battery saver",
+    )
+    val drawerless = t("Menyusiz rejim", "Без меню приложений", "No app drawer")
+    val drawerlessDesc = t(
+        "Barcha ilovalar bosh ekranda turadi (Xiaomi uslubi). Yangi ilovalar avtomatik qoʻshiladi.",
+        "Все приложения на главном экране (как в MIUI). Новые добавляются автоматически.",
+        "All apps live on the home screen (MIUI style). New apps are added automatically.",
+    )
+    val drawerlessRemoveHint = t(
+        "Menyusiz rejimda ilovani yashirish yoki oʻchirish uchun uni uzoq bosing",
+        "В этом режиме удерживайте приложение, чтобы скрыть или удалить его",
+        "In this mode, long-press an app to hide or uninstall it",
+    )
+    val homeRows = t("Bosh ekran qatorlari", "Строки главного экрана", "Home screen rows")
+    val pageFull = t("Sahifa toʻla", "Страница заполнена", "Page is full")
+    val dragHint = t(
+        "Ikonni uzoq bosib suring: chetga — boshqa sahifa, pastga — dock, boshqa ikon ustiga — papka",
+        "Удерживайте и тяните: к краю — другая страница, вниз — док, на другую иконку — папка",
+        "Long-press and drag: to an edge — other page, down — dock, onto another icon — folder",
+    )
 
     // Sozlamalar ekrani
     val settingsTitle = t("Sozlamalar", "Настройки", "Settings")
